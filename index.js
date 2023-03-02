@@ -23,13 +23,6 @@ const exercise = new mongoose.Schema({
   description: String,
   duration: Number,
   date: Date,
-}, {
-  toJSON: {
-    transform: function (doc, ret) {
-      ret.date = ret.date.toDateString();
-      delete ret.__v;
-    }
-  }
 });
 
 const exerciseUser = new mongoose.Schema({
@@ -38,6 +31,7 @@ const exerciseUser = new mongoose.Schema({
 }, {
   toJSON: {
     transform: function (doc, ret) {
+      delete ret.exercises;
       delete ret.__v;
     }
   }
@@ -91,7 +85,13 @@ app.post('/api/users/:_id/exercises', async (req, res) => {
     });
     user.exercises.push(exercise);
     const doc = await user.save();
-    res.json(doc);
+    res.json({
+      _id: user._id,
+      username: user.username,
+      description: exercise.description,
+      duration: exercise.duration,
+      date: exercise.date.toDateString(),
+    });
   } catch (err) {
     console.error(err);
   }
@@ -99,32 +99,54 @@ app.post('/api/users/:_id/exercises', async (req, res) => {
 
 app.get('/api/users/:_id/logs', async (req, res) => {
   let { from, to, limit } = req.query;
+  from = from ? new Date(from) : new Date(1970, 0);
+  to = to ? new Date(to) : new Date();
+  limit = limit ? +limit : 500;
 
   try {
-    const filter = {
-      '_id': req.params._id,
+    const user = await UserModel.aggregate([
+      {
+        $match: { '_id': new mongoose.mongo.ObjectId(req.params._id) },
+      }, {
+        $addFields: {
+          count: { $size: '$exercises' }
+        }
+      }, {
+        $unwind: { path: '$exercises' }
+      }, {
+        $match: {
+          'exercises.date': {
+            $gte: from,
+            $lte: to
+          }
+        },
+      },
+      {
+        $limit: limit,
+      }, {
+        $group: {
+          '_id': '$_id',
+          'username': { $first: '$username' },
+          'count': { $first: '$count' },
+          'log': {
+            $push: {
+              'description': '$exercises.description',
+              'duration': '$exercises.duration',
+              'date': '$exercises.date',
+            }
+          },
+        }
+      }
+    ]);
+
+    for (let e of user[0].log) {
+      e.date = e.date.toDateString();
     }
-    if (from) filter['exercises.date'].$gte = new Date(from);
-    if (to) filter['exercises.date'].$lte = new Date(to);
-    if (limit) filter['exercises.date'].$limit = limit;
-
-    const user = await UserModel.findOne(filter);
-
-    const log = user.exercises.map(e => ({
-      description: e.description,
-      duration: e.duration,
-      date: e.date.toDateString(),
-    }));
-
-    res.json({
-      username: user.username,
-      count: log.length,
-      _id: user._id,
-      log: log,
-    });
+    res.json(user[0]);
   } catch (err) {
     console.error(err);
   }
+
 })
 
 const listener = app.listen(process.env.PORT || 3000, () => {
